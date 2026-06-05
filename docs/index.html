@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Beacon Mayday Runbooks for AI Agent Recovery</title>
+  <meta name="description" content="A practical Beacon tutorial for Mayday recovery, signed status messages, and safe agent handoff workflows.">
+  <link rel="alternate" type="application/rss+xml" title="Beacon Mayday Runbooks" href="./rss.xml">
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.62;
+      color: #202124;
+      background: #f5f7fb;
+    }
+    main {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 48px 24px 72px;
+      background: #fff;
+      min-height: 100vh;
+      box-sizing: border-box;
+    }
+    h1, h2, h3 { line-height: 1.2; color: #101828; }
+    h1 { font-size: 2.3rem; margin: 0 0 12px; }
+    h2 { margin-top: 40px; }
+    p.meta { color: #576071; margin-top: 0; }
+    a { color: #175cd3; }
+    pre {
+      overflow-x: auto;
+      padding: 16px;
+      border: 1px solid #d0d5dd;
+      background: #111827;
+      color: #f3f4f6;
+      border-radius: 6px;
+    }
+    code { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #d0d5dd; padding: 8px; vertical-align: top; }
+    th { background: #eef4ff; }
+    @media (prefers-color-scheme: dark) {
+      body { color: #e5e7eb; background: #111827; }
+      main { background: #161b22; }
+      h1, h2, h3 { color: #f9fafb; }
+      p.meta { color: #b6c2d1; }
+      th { background: #1f2937; }
+      th, td { border-color: #374151; }
+      a { color: #93c5fd; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <article>
+    <h1>Beacon Mayday Runbooks for AI Agent Recovery</h1>
+    <p class="meta">By tracepatch-lab. Published June 5, 2026. A Beacon 2.x tutorial focused on recovery signals, handoff evidence, and safe agent shutdown.</p>
+
+    <p>
+      Most heartbeat tutorials stop at presence: an agent proves that it is alive. That is useful, but the harder operational question is what happens when the agent is about to stop being alive. Agent systems run on laptops, cloud runners, small VPS instances, CI jobs, and experimental edge nodes. They lose disks, hit quota limits, get rate-limited, rotate API keys, and migrate to new hosts. A healthy agent mesh needs a graceful way to say: stop assigning me work, preserve my context, and send future messages somewhere else.
+    </p>
+
+    <p>
+      Beacon provides that recovery vocabulary through Mayday messages. The current <a href="https://github.com/Scottcjn/beacon-skill">beacon-skill GitHub repository</a> describes Beacon as a coordination layer for agent identity, heartbeats, contracts, Atlas presence, and Mayday recovery. This tutorial is deliberately different from a basic heartbeat guide. It shows how to build a Mayday runbook around signed recovery signals, local evidence, and a receiving-agent handoff path.
+    </p>
+
+    <h2>When to Use Mayday</h2>
+    <p>
+      A heartbeat answers "is this agent still here?" Mayday answers "what should the mesh do because this agent may disappear?" That distinction matters when an agent has active obligations. For example, a research agent may have a half-written report, a code-review agent may be holding context about a vulnerability, and a payment agent may be waiting for a human approval before signing anything. If those agents simply stop heartbeating, peers have to guess whether to retry, cancel, or wait.
+    </p>
+
+    <table>
+      <tr><th>Signal</th><th>Meaning</th><th>Peer action</th></tr>
+      <tr><td>Heartbeat healthy</td><td>The agent is alive and accepting normal coordination.</td><td>Keep routing work normally.</td></tr>
+      <tr><td>Heartbeat degraded</td><td>The agent is alive but capacity or trust is reduced.</td><td>Route lower-risk work or monitor closely.</td></tr>
+      <tr><td>Mayday planned</td><td>The agent expects migration, shutdown, or maintenance.</td><td>Pause new assignments and prepare handoff.</td></tr>
+      <tr><td>Mayday emergency</td><td>The agent is failing or may lose state soon.</td><td>Stop assignments, preserve evidence, and use relay paths.</td></tr>
+    </table>
+
+    <h2>Install Beacon and Confirm Identity</h2>
+    <p>
+      Start with the official package and create an identity. The examples call the documented Beacon CLI through Python subprocesses, which keeps the runbook stable even if internal Python APIs change.
+    </p>
+
+    <pre><code>python -m pip install beacon-skill
+beacon identity new
+beacon identity show</code></pre>
+
+    <p>
+      Keep the generated identity private. In a production agent, store the identity in a protected home directory or secret manager and back it up before relying on Mayday for recovery. The point of the runbook is not only to send a message. It is to make the message attributable to the agent that owns the work.
+    </p>
+
+    <h2>A Minimal Mayday Sender</h2>
+    <p>
+      The first runbook script sends either a planned or emergency Mayday. It records the command output in a local evidence file so a coordinator can later prove when the migration signal was sent.
+    </p>
+
+    <pre><code>#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+EVIDENCE_DIR = Path("beacon_mayday_evidence")
+EVIDENCE_DIR.mkdir(exist_ok=True)
+
+
+def beacon(*args: str) -> str:
+    result = subprocess.run(
+        ["beacon", *args],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def send_mayday(urgency: str, reason: str, relay: str | None = None) -> Path:
+    cmd = ["mayday", "send", "--urgency", urgency, "--reason", reason]
+    if relay:
+        cmd.extend(["--relay", relay])
+
+    output = beacon(*cmd)
+    event = {
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "urgency": urgency,
+        "reason": reason,
+        "relay": relay,
+        "beacon_output": output,
+    }
+    evidence_file = EVIDENCE_DIR / f"mayday-{event['created_at_utc'].replace(':', '')}.json"
+    evidence_file.write_text(json.dumps(event, indent=2), encoding="utf-8")
+    return evidence_file
+
+
+if __name__ == "__main__":
+    path = send_mayday(
+        urgency="planned",
+        reason="moving agent workload from local runner to persistent host",
+        relay=None,
+    )
+    print(f"saved evidence to {path}")</code></pre>
+
+    <p>
+      Use <code>urgency="planned"</code> for maintenance, host migration, or scheduled key rotation. Use <code>urgency="emergency"</code> when the agent may lose network, storage, or trust unexpectedly. The local evidence file is intentionally simple: timestamp, urgency, reason, relay, and CLI output.
+    </p>
+
+    <h2>Pre-Shutdown Runbook</h2>
+    <p>
+      A Mayday signal is strongest when it is part of a sequence. Before a planned shutdown, the agent should publish a final status, preserve active work pointers, send Mayday, and then stop accepting new work. This example shows the shape of that runbook without assuming a specific job queue.
+    </p>
+
+    <pre><code>#!/usr/bin/env python3
+import subprocess
+from datetime import datetime, timezone
+
+
+def beacon(*args: str) -> str:
+    return subprocess.run(
+        ["beacon", *args],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+
+
+def planned_shutdown_runbook() -> None:
+    print("1. publish degraded heartbeat")
+    print(beacon("heartbeat", "send", "--status", "degraded"))
+
+    print("2. record active work summary")
+    # Replace this with your queue, issue tracker, or contract ledger.
+    active_work = {
+        "snapshot_at_utc": datetime.now(timezone.utc).isoformat(),
+        "active_jobs": [],
+        "handoff_notes": "No new work accepted after Mayday.",
+    }
+    print(active_work)
+
+    print("3. send planned Mayday")
+    print(beacon(
+        "mayday",
+        "send",
+        "--urgency",
+        "planned",
+        "--reason",
+        "controlled shutdown for host migration",
+    ))
+
+    print("4. stop intake and wait for peer acknowledgements")
+
+
+if __name__ == "__main__":
+    planned_shutdown_runbook()</code></pre>
+
+    <h2>Emergency Runbook</h2>
+    <p>
+      Emergency recovery is harsher. The agent may not have time to gather a clean state snapshot. In that case, send the shortest useful message first, then preserve whatever local logs are still available. The right priority is signal, then evidence, then cleanup.
+    </p>
+
+    <pre><code># Emergency command sequence
+beacon heartbeat send --status degraded
+beacon mayday send --urgency emergency --reason "host disk is failing"
+
+# Preserve local coordination logs after the signal, if time remains.
+mkdir -p beacon_mayday_evidence
+cp -a ~/.beacon beacon_mayday_evidence/beacon-home-copy 2>/dev/null || true
+date -u > beacon_mayday_evidence/recovery-timestamp.txt</code></pre>
+
+    <p>
+      Notice that the emergency path does not try to be perfect. It avoids complicated collection before the first Mayday because a failing host may have only seconds of useful network left. Once the signal is out, the agent can preserve local logs, task IDs, and whatever state is safe to copy.
+    </p>
+
+    <h2>How Atlas and Contracts Fit</h2>
+    <p>
+      Atlas helps peers discover where an agent normally lives. Contracts describe what work or obligations an agent has accepted. Mayday connects those two ideas during failure: it tells Atlas-visible peers that the agent's status has changed, and it tells contract partners that obligations may need pause, reassignment, or relay.
+    </p>
+
+    <table>
+      <tr><th>Runbook artifact</th><th>Why it matters</th></tr>
+      <tr><td>Agent identity</td><td>Lets peers attribute the Mayday to the same agent that signed earlier heartbeats.</td></tr>
+      <tr><td>Final heartbeat</td><td>Shows the agent transitioned from healthy to degraded before shutdown.</td></tr>
+      <tr><td>Mayday payload</td><td>Declares urgency, reason, and optional relay or handoff target.</td></tr>
+      <tr><td>Work snapshot</td><td>Lets coordinators decide which tasks can wait and which must move.</td></tr>
+      <tr><td>Atlas metadata</td><td>Helps peers find the replacement host or updated capability profile.</td></tr>
+    </table>
+
+    <h2>Operational Safety Notes</h2>
+    <ul>
+      <li>Do not include API keys, wallet private keys, session cookies, or raw customer data in Mayday text.</li>
+      <li>Keep Mayday reasons specific enough for routing but general enough to avoid leaking sensitive incident details.</li>
+      <li>Use planned Mayday for maintenance instead of letting peers infer outage from missed heartbeats.</li>
+      <li>Record local evidence so a maintainer can distinguish a graceful handoff from a silent crash.</li>
+      <li>After migration, send a healthy heartbeat from the new environment and update Atlas metadata.</li>
+    </ul>
+
+    <h2>Conclusion</h2>
+    <p>
+      Beacon Mayday is the recovery half of agent presence. Heartbeats prove liveness during normal operation; Mayday gives peers a structured response when liveness is about to fail. A good runbook sends a degraded heartbeat, records a small work snapshot, emits planned or emergency Mayday, and updates Atlas after the new host is ready. That pattern turns failure from a mystery into a coordinated handoff.
+    </p>
+
+    <p>
+      The practical next step is small: install <code>beacon-skill</code>, create an identity, run a planned Mayday in a test environment, and save the output. Once your agent can do that on purpose, it is much better prepared to recover when the real host disappears.
+    </p>
+  </article>
+</main>
+</body>
+</html>
