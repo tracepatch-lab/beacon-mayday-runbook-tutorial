@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0">
+  <channel>
+    <title>Beacon Mayday Runbooks</title>
+    <link>https://tracepatch-lab.github.io/beacon-mayday-runbook-tutorial/</link>
+    <description>Beacon Mayday recovery tutorials for AI agent operators.</description>
+    <item>
+      <title>Beacon Mayday Runbooks for AI Agent Recovery</title>
+      <link>https://tracepatch-lab.github.io/beacon-mayday-runbook-tutorial/</link>
+      <guid>https://tracepatch-lab.github.io/beacon-mayday-runbook-tutorial/</guid>
+      <pubDate>Fri, 05 Jun 2026 04:20:00 GMT</pubDate>
+      <description>A practical Beacon tutorial focused on Mayday recovery, signed status messages, and safe agent handoff workflows.</description>
+    </item>
+  </channel>
+</rss>
